@@ -1,4 +1,4 @@
-// VoidLauncher server: профили (ник + пароль), уникальные 8-значные ID (10000000–99999999), значки и админ-панель (/admin).
+// VoidLauncher server: профили (ник + пароль), уникальные ID (новым выдаётся случайный 8-значный; админ может поставить любой от 1 до 99999999), значки (текст или картинка), баны и админ-панель (/admin).
 // Без внешних зависимостей. Нужен Node.js 22.5+ (встроенный node:sqlite).
 //   запуск:  ADMIN_PASSWORD='длинный-пароль' node server/server.js
 //   переменные: PORT (3000), HOST (0.0.0.0), DB_PATH (./data/void.db), TRUST_PROXY=1 (за nginx/Caddy), ADMIN_PASSWORD (≥10 символов; без него админ-панель выключена)
@@ -7,15 +7,16 @@ const http = require('http'), crypto = require('crypto'), fs = require('fs'), pa
 const { DatabaseSync } = require('node:sqlite');
 const scrypt = promisify(crypto.scrypt);
 
-const ID_MIN = 10000000, ID_MAX = 99999999; // ровно 8 цифр, без ведущего нуля
+const ID_MIN = 1, ID_MAX = 99999999, ID_RANDOM_MIN = 10000000; // допустимы ID из 1–8 цифр; случайные всегда 8-значные
 const TOKEN_RE = /^[0-9a-f]{64}$/;          // секрет установки: 32 случайных байта в hex, генерируется клиентом
 const NICK_RE = /^[A-Za-z0-9_]{3,16}$/;     // как ник в Minecraft
 const PASS_MIN = 6, PASS_MAX = 64;
 const ADMIN_PASS_MIN = 10, ADMIN_SESSION_MS = 8 * 3600e3, MAX_BADGES = 100;
+const IMG_MAX_BYTES = 32768, IMG_MAX_SIDE = 256, IMG_RE = /^data:image\/png;base64,[A-Za-z0-9+\/]+={0,2}$/, REASON_MAX = 200;
 const FAIL_WINDOW = 15 * 60 * 1000;         // окно подсчёта неудачных входов
 const sha = t => crypto.createHash('sha256').update(t).digest('hex');
 const shaBuf = t => crypto.createHash('sha256').update(String(t)).digest();
-const defaultRng = () => crypto.randomInt(ID_MIN, ID_MAX + 1);
+const defaultRng = () => crypto.randomInt(ID_RANDOM_MIN, ID_MAX + 1);
 const fail = (code, status) => Object.assign(new Error(code), { code, status });
 const hashPass = async (pw, salt) => (await scrypt(String(pw).normalize('NFKC'), salt, 64, { N: 16384, r: 8, p: 1 })).toString('hex');
 const DUMMY_SALT = crypto.randomBytes(16).toString('hex'); // чтобы вход по несуществующему нику занимал столько же времени
@@ -24,15 +25,16 @@ const validId = n => Number.isInteger(n) && n >= ID_MIN && n <= ID_MAX;
 const CTRL_RE = /[\u0000-\u001f\u007f]/;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+const USERS_DDL = `id INTEGER PRIMARY KEY CHECK(id BETWEEN ${ID_MIN} AND ${ID_MAX}),
+      token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
+      nick TEXT, nick_lc TEXT, pass_salt TEXT, pass_hash TEXT,
+      banned INTEGER NOT NULL DEFAULT 0, ban_reason TEXT`;
+
 function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = defaultRng, trustProxy = false, regLimit = 20, loginLimit = 8, adminPassword = process.env.ADMIN_PASSWORD, adminLimit = 5, adminDelay = 300 } = {}) {
   if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
-    CREATE TABLE IF NOT EXISTS users(
-      id INTEGER PRIMARY KEY CHECK(id BETWEEN ${ID_MIN} AND ${ID_MAX}),
-      token_hash TEXT NOT NULL UNIQUE,
-      created_at INTEGER NOT NULL
-    ) STRICT;
+    CREATE TABLE IF NOT EXISTS users(${USERS_DDL}) STRICT;
     CREATE TABLE IF NOT EXISTS sessions(
       token_hash TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id),
@@ -51,20 +53,33 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
     ) STRICT;`);
   // миграция старых баз (где были только ID): добавляем ник и пароль
   const cols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
-  for (const c of ['nick', 'nick_lc', 'pass_salt', 'pass_hash']) if (!cols.includes(c)) db.exec(`ALTER TABLE users ADD COLUMN ${c} TEXT`);
+  for (const c of ['nick', 'nick_lc', 'pass_salt', 'pass_hash', 'ban_reason']) if (!cols.includes(c)) db.exec(`ALTER TABLE users ADD COLUMN ${c} TEXT`);
+  if (!cols.includes('banned')) db.exec('ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0');
+  if (!db.prepare('PRAGMA table_info(badges)').all().some(c => c.name === 'image')) db.exec('ALTER TABLE badges ADD COLUMN image TEXT');
+  // старые базы запрещали ID короче 8 цифр (CHECK в схеме): пересоздаём таблицу users без этого ограничения
+  if (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get().sql.includes('10000000')) {
+    const names = 'id, token_hash, created_at, nick, nick_lc, pass_salt, pass_hash, banned, ban_reason';
+    db.exec('PRAGMA foreign_keys=OFF'); // sessions ссылается на users: на время пересоздания проверку отключаем
+    try {
+      db.exec('BEGIN');
+      db.exec(`CREATE TABLE users_new(${USERS_DDL}) STRICT; INSERT INTO users_new(${names}) SELECT ${names} FROM users; DROP TABLE users; ALTER TABLE users_new RENAME TO users;`);
+      db.exec('COMMIT');
+    } catch (e) { try { db.exec('ROLLBACK'); } catch {} throw e; } finally { db.exec('PRAGMA foreign_keys=ON'); }
+  }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_nick_lc ON users(nick_lc)');
 
-  const byUserToken = db.prepare('SELECT id, nick, created_at FROM users WHERE token_hash=?');
-  const bySession = db.prepare('SELECT u.id, u.nick, u.created_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?');
-  const byNick = db.prepare('SELECT id, nick, created_at, pass_salt, pass_hash FROM users WHERE nick_lc=?');
-  const byId = db.prepare('SELECT id, nick, created_at FROM users WHERE id=?');
+  const byUserToken = db.prepare('SELECT id, nick, created_at, banned, ban_reason FROM users WHERE token_hash=?');
+  const bySession = db.prepare('SELECT u.id, u.nick, u.created_at, u.banned, u.ban_reason FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?');
+  const byNick = db.prepare('SELECT id, nick, created_at, pass_salt, pass_hash, banned, ban_reason FROM users WHERE nick_lc=?');
+  const byId = db.prepare('SELECT id, nick, created_at, banned, ban_reason FROM users WHERE id=?');
   const ins = db.prepare('INSERT INTO users(id, token_hash, created_at, nick, nick_lc, pass_salt, pass_hash) VALUES(?,?,?,?,?,?,?)');
   const claim = db.prepare('UPDATE users SET nick=?, nick_lc=?, pass_salt=?, pass_hash=? WHERE id=? AND nick IS NULL');
   const addSession = db.prepare('INSERT OR IGNORE INTO sessions(token_hash, user_id, created_at) VALUES(?,?,?)');
   const count = db.prepare('SELECT COUNT(*) n FROM users');
-  const badgesOfStmt = db.prepare('SELECT b.id, b.title, b.icon, b.color FROM user_badges ub JOIN badges b ON b.id=ub.badge_id WHERE ub.user_id=? ORDER BY ub.granted_at, b.id');
-  const badgesOf = id => badgesOfStmt.all(id).map(b => ({ id: b.id, title: b.title, icon: b.icon, color: b.color }));
+  const badgesOfStmt = db.prepare('SELECT b.id, b.title, b.icon, b.color, b.image FROM user_badges ub JOIN badges b ON b.id=ub.badge_id WHERE ub.user_id=? ORDER BY ub.granted_at, b.id');
+  const badgesOf = id => badgesOfStmt.all(id).map(b => ({ id: b.id, title: b.title, icon: b.icon, color: b.color, image: b.image || null }));
   const find = h => byUserToken.get(h) || bySession.get(h);
+  const noBan = u => { if (u && u.banned) throw Object.assign(fail('banned', 403), { reason: u.ban_reason || '' }); return u; }; // забаненный не может ни войти, ни зарегистрироваться
   const pub = u => ({ id: u.id, nick: u.nick || null, createdAt: u.created_at, badges: badgesOf(u.id) });
   const verify = async (u, pw) => {
     if (!u || !u.pass_hash || !u.pass_salt || typeof pw !== 'string') return false;
@@ -74,7 +89,7 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
 
   // создаёт пользователя с новым ID. Идемпотентно по токену; коллизии ID ловит PRIMARY KEY, без гонок.
   function createUser(h, extra) {
-    const have = find(h); if (have) return { ...pub(have), created: false };
+    const have = noBan(find(h)); if (have) return { ...pub(have), created: false };
     if (count.get().n >= ID_MAX - ID_MIN + 1) throw fail('full', 503);
     for (let i = 0; i < 1000; i++) {
       const id = rng(), now = Date.now();
@@ -84,7 +99,7 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
       } catch (e) {
         if (!/UNIQUE|constraint/i.test(e.message)) throw e;
         if (/nick_lc/.test(e.message)) throw fail('nick_taken', 409);
-        const again = find(h); if (again) return { ...pub(again), created: false }; // параллельный запрос с тем же токеном
+        const again = noBan(find(h)); if (again) return { ...pub(again), created: false }; // параллельный запрос с тем же токеном
       } // занятый ID → пробуем следующий
     }
     throw fail('full', 503);
@@ -95,7 +110,7 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
   async function signup(token, nick, password) {
     if (!NICK_RE.test(nick)) throw fail('bad_nick', 400);
     if (!validPass(password)) throw fail('bad_password', 400);
-    const h = sha(token), lc = nick.toLowerCase(), have = find(h);
+    const h = sha(token), lc = nick.toLowerCase(), have = noBan(find(h));
     if (have && have.nick) { // повтор после обрыва связи: тот же ник и пароль → тот же результат
       const u = byNick.get(lc);
       if (u && u.id === have.id && await verify(u, password)) return { ...pub(u), created: false };
@@ -122,6 +137,7 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
     const u = byNick.get(lc), ok = u ? await verify(u, password) : (await hashPass(password, DUMMY_SALT), false);
     if (!ok) { addFail('ip:' + ip); addFail('n:' + lc); throw fail('bad_credentials', 401); }
     fails.delete('n:' + lc);
+    noBan(u); // сообщаем о бане только после верного пароля
     const h = sha(token), have = find(h);
     if (have && have.id !== u.id) throw fail('token_used', 409);
     if (!have) addSession.run(h, u.id, Date.now());
@@ -129,27 +145,48 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
   }
 
   // ---- значки и смена ID (используются админ-панелью) ----
+  // картинка значка: только PNG в виде data-URL, до 32 КБ и до 256×256 (админка сама уменьшает до 64×64)
+  const checkImage = v => {
+    if (v == null || v === '') return null;
+    if (typeof v !== 'string' || v.length > 48000 || !IMG_RE.test(v)) throw fail('bad_image', 400);
+    const b = Buffer.from(v.slice(22), 'base64');
+    if (b.length < 33 || b.length > IMG_MAX_BYTES || b.readUInt32BE(0) !== 0x89504e47 || b.readUInt32BE(4) !== 0x0d0a1a0a || b.toString('latin1', 12, 16) !== 'IHDR') throw fail('bad_image', 400);
+    const w = b.readUInt32BE(16), h = b.readUInt32BE(20);
+    if (!w || !h || w > IMG_MAX_SIDE || h > IMG_MAX_SIDE) throw fail('bad_image', 400);
+    return v;
+  };
   const checkBadge = j => {
-    const title = String(j.title == null ? '' : j.title).trim(), icon = String(j.icon == null ? '' : j.icon).trim(), color = String(j.color == null ? '' : j.color).trim();
+    const title = String(j.title == null ? '' : j.title).trim(), color = String(j.color == null ? '' : j.color).trim();
+    const image = checkImage(j.image);
+    let icon = String(j.icon == null ? '' : j.icon).trim(); if (!icon && image) icon = '★'; // запасной текст для старых версий лаунчера
     if (!title || title.length > 24 || CTRL_RE.test(title)) throw fail('bad_title', 400);
     if (!icon || [...icon].length > 8 || CTRL_RE.test(icon)) throw fail('bad_icon', 400);
     if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw fail('bad_color', 400);
-    return { title, icon, color: color.toLowerCase() };
+    return { title, icon, color: color.toLowerCase(), image };
   };
-  const insBadge = db.prepare('INSERT INTO badges(title, icon, color, created_at) VALUES(?,?,?,?)');
-  const badgeById = db.prepare('SELECT id, title, icon, color FROM badges WHERE id=?');
+  const insBadge = db.prepare('INSERT INTO badges(title, icon, color, created_at, image) VALUES(?,?,?,?,?)');
+  const badgeById = db.prepare('SELECT id, title, icon, color, image FROM badges WHERE id=?');
   const delBadgeLinks = db.prepare('DELETE FROM user_badges WHERE badge_id=?'), delBadge = db.prepare('DELETE FROM badges WHERE id=?');
   const grantStmt = db.prepare('INSERT OR IGNORE INTO user_badges(user_id, badge_id, granted_at) VALUES(?,?,?)'), revokeStmt = db.prepare('DELETE FROM user_badges WHERE user_id=? AND badge_id=?');
-  const listBadgesStmt = db.prepare('SELECT b.id, b.title, b.icon, b.color, b.created_at, (SELECT COUNT(*) FROM user_badges WHERE badge_id=b.id) AS users FROM badges b ORDER BY b.id');
+  const listBadgesStmt = db.prepare('SELECT b.id, b.title, b.icon, b.color, b.image, b.created_at, (SELECT COUNT(*) FROM user_badges WHERE badge_id=b.id) AS users FROM badges b ORDER BY b.id');
   const needUser = id => { if (!validId(id) || !byId.get(id)) throw fail('not_found', 404); };
   const needBadge = id => { if (!Number.isInteger(id) || !badgeById.get(id)) throw fail('badge_not_found', 404); };
   function createBadge(j) {
     if (db.prepare('SELECT COUNT(*) n FROM badges').get().n >= MAX_BADGES) throw fail('too_many_badges', 409);
-    const b = checkBadge(j), r = insBadge.run(b.title, b.icon, b.color, Date.now()); return { id: Number(r.lastInsertRowid), ...b };
+    const b = checkBadge(j), r = insBadge.run(b.title, b.icon, b.color, Date.now(), b.image); return { id: Number(r.lastInsertRowid), ...b };
   }
   function deleteBadge(id) { needBadge(id); db.exec('BEGIN'); try { delBadgeLinks.run(id); delBadge.run(id); db.exec('COMMIT'); } catch (e) { try { db.exec('ROLLBACK'); } catch {} throw e; } }
   function grant(userId, badgeId) { needUser(userId); needBadge(badgeId); grantStmt.run(userId, badgeId, Date.now()); return badgesOf(userId); }
   function revoke(userId, badgeId) { needUser(userId); revokeStmt.run(userId, badgeId); return badgesOf(userId); }
+
+  // ---- баны ----
+  const banStmt = db.prepare('UPDATE users SET banned=1, ban_reason=? WHERE id=?'), unbanStmt = db.prepare('UPDATE users SET banned=0, ban_reason=NULL WHERE id=?');
+  function ban(userId, reason) {
+    needUser(userId); reason = String(reason == null ? '' : reason).trim();
+    if (reason.length > REASON_MAX || CTRL_RE.test(reason)) throw fail('bad_reason', 400);
+    banStmt.run(reason || null, userId); return { banned: true, banReason: reason || null };
+  }
+  function unban(userId) { needUser(userId); unbanStmt.run(userId); return { banned: false, banReason: null }; }
 
   // смена ID: newId не задан → случайный свободный. Токены и значки переезжают вместе с пользователем.
   function changeId(oldId, newId) {
@@ -178,11 +215,11 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
   }
   const likeEsc = q => q.replace(/[\\%_]/g, '\\$&');
   const USERS_WHERE = `WHERE ?='' OR CAST(id AS TEXT) LIKE ?||'%' ESCAPE '\\' OR nick_lc LIKE '%'||?||'%' ESCAPE '\\'`;
-  const usersStmt = db.prepare(`SELECT id, nick, created_at FROM users ${USERS_WHERE} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`);
+  const usersStmt = db.prepare(`SELECT id, nick, created_at, banned, ban_reason FROM users ${USERS_WHERE} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`);
   const usersCount = db.prepare(`SELECT COUNT(*) n FROM users ${USERS_WHERE}`);
   function listUsers(q, limit, offset) {
     q = likeEsc(String(q || '').trim().toLowerCase().slice(0, 32)); limit = Math.min(100, Math.max(1, limit | 0 || 50)); offset = Math.max(0, offset | 0);
-    return { total: usersCount.get(q, q, q).n, users: usersStmt.all(q, q, q, limit, offset).map(pub) };
+    return { total: usersCount.get(q, q, q).n, users: usersStmt.all(q, q, q, limit, offset).map(u => ({ ...pub(u), banned: !!u.banned, banReason: u.ban_reason || null })) };
   }
 
   // ---- админ-панель: пароль из ADMIN_PASSWORD, сессия в HttpOnly-cookie ----
@@ -195,7 +232,7 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
   const isHttps = req => req.socket.encrypted || (trustProxy && String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https');
   const cookie = (req, v, maxAge) => `void_admin=${v}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=${maxAge}${isHttps(req) ? '; Secure' : ''}`;
   const sameOrigin = req => { const o = req.headers.origin; if (!o) return true; try { return new URL(o).host === req.headers.host; } catch { return false; } };
-  const idArg = v => (typeof v === 'number' ? v : typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : NaN);
+  const idArg = v => (typeof v === 'number' ? v : typeof v === 'string' && /^[1-9]\d{0,15}$/.test(v) ? Number(v) : NaN);
 
   async function adminApi(req, res, url, ip) {
     if (!adminOn) throw fail('admin_disabled', 503);
@@ -213,13 +250,15 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
     if (post && route === 'logout') { adminSessions.delete(tok); return send(res, 200, { ok: true }, { 'set-cookie': cookie(req, '', 0) }); }
     if (req.method === 'GET' && route === 'session') return send(res, 200, { ok: true });
     if (req.method === 'GET' && route === 'users') return send(res, 200, listUsers(url.searchParams.get('q'), +url.searchParams.get('limit'), +url.searchParams.get('offset')));
-    if (req.method === 'GET' && route === 'badges') return send(res, 200, { badges: listBadgesStmt.all().map(b => ({ id: b.id, title: b.title, icon: b.icon, color: b.color, users: b.users })) });
+    if (req.method === 'GET' && route === 'badges') return send(res, 200, { badges: listBadgesStmt.all().map(b => ({ id: b.id, title: b.title, icon: b.icon, color: b.color, image: b.image || null, users: b.users })) });
     if (post) {
-      const j = await json(req);
+      const j = await json(req, route === 'badges' ? 70000 : 2048); // для значка с картинкой тело больше
       if (route === 'badges') { const b = createBadge(j); adminLog('значок создан', b.id, b.title); return send(res, 201, b); }
       if (route === 'badges/delete') { deleteBadge(idArg(j.id)); adminLog('значок удалён', j.id); return send(res, 200, { ok: true }); }
       if (route === 'grant') { const b = grant(idArg(j.userId), idArg(j.badgeId)); adminLog('значок выдан', j.badgeId, '→', j.userId); return send(res, 200, { badges: b }); }
       if (route === 'revoke') { const b = revoke(idArg(j.userId), idArg(j.badgeId)); adminLog('значок отозван', j.badgeId, '←', j.userId); return send(res, 200, { badges: b }); }
+      if (route === 'ban') { const r = ban(idArg(j.userId), j.reason); adminLog('бан', j.userId, r.banReason || ''); return send(res, 200, r); }
+      if (route === 'unban') { const r = unban(idArg(j.userId)); adminLog('разбан', j.userId); return send(res, 200, r); }
       if (route === 'change-id') { const r = changeId(idArg(j.userId), j.newId == null || j.newId === '' ? null : idArg(j.newId)); adminLog('ID сменён', j.userId, '→', r.id); return send(res, 200, r); }
     }
     throw fail('not_found', 404);
@@ -235,11 +274,11 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
   }, 6e5); timer.unref();
 
   const send = (res, code, o, extra) => { const b = JSON.stringify(o); res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(b), ...extra }); res.end(b); };
-  const body = req => new Promise((ok, no) => { let s = '', n = 0; req.on('data', c => { n += c.length; if (n > 2048) { no(new Error('big')); req.destroy(); } else s += c; }); req.on('end', () => ok(s)); req.on('error', no); });
-  const json = async req => { let j; try { j = JSON.parse(await body(req)); } catch { throw fail('bad_json', 400); } if (!j || typeof j !== 'object') throw fail('bad_json', 400); return j; };
+  const body = (req, max) => new Promise((ok, no) => { let s = '', n = 0; req.on('data', c => { n += c.length; if (n > max) { no(fail('too_big', 413)); req.destroy(); } else s += c; }); req.on('end', () => ok(s)); req.on('error', no); });
+  const json = async (req, max = 2048) => { let s; try { s = await body(req, max); } catch (e) { throw e.status ? e : fail('bad_json', 400); } let j; try { j = JSON.parse(s); } catch { throw fail('bad_json', 400); } if (!j || typeof j !== 'object') throw fail('bad_json', 400); return j; };
   const tokenOf = j => { if (typeof j.token !== 'string' || !TOKEN_RE.test(j.token)) throw fail('bad_token', 400); return j.token; };
   const page = (res, code, html) => { res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
-    'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" }); res.end(html); };
+    'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" }); res.end(html); };
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -264,20 +303,20 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
         const j = await json(req); return send(res, 200, await login(tokenOf(j), String(j.nick || '').trim(), j.password, ip));
       }
       if (req.method === 'POST' && url.pathname === '/api/me') { // токен в теле, а не в URL — не попадает в логи прокси
-        const u = find(sha(tokenOf(await json(req)))); return u ? send(res, 200, pub(u)) : send(res, 404, { error: 'not_found' });
+        const u = noBan(find(sha(tokenOf(await json(req))))); return u ? send(res, 200, pub(u)) : send(res, 404, { error: 'not_found' });
       }
-      const m = url.pathname.match(/^\/api\/users\/(\d{8})$/);
+      const m = url.pathname.match(/^\/api\/users\/([1-9]\d{0,7})$/);
       if (req.method === 'GET' && m) { const u = byId.get(+m[1]); return u ? send(res, 200, { id: u.id, createdAt: u.created_at }) : send(res, 404, { error: 'not_found' }); }
       send(res, 404, { error: 'not_found' });
     } catch (e) {
-      if (e.status) return send(res, e.status, { error: e.code });
+      if (e.status) return send(res, e.status, e.reason !== undefined ? { error: e.code, reason: e.reason } : { error: e.code });
       console.error(e); send(res, 500, { error: 'server' });
     }
   });
-  return { server, db, register, signup, login, createBadge, deleteBadge, grant, revoke, changeId, listUsers, adminEnabled: adminOn && !!adminHtml, close: () => { clearInterval(timer); server.close(); db.close(); } };
+  return { server, db, register, signup, login, createBadge, deleteBadge, grant, revoke, ban, unban, changeId, listUsers, adminEnabled: adminOn && !!adminHtml, close: () => { clearInterval(timer); server.close(); db.close(); } };
 }
 
-module.exports = { createApp, ID_MIN, ID_MAX, TOKEN_RE, NICK_RE };
+module.exports = { createApp, ID_MIN, ID_MAX, ID_RANDOM_MIN, TOKEN_RE, NICK_RE };
 
 if (require.main === module) {
   (async () => {

@@ -48,6 +48,9 @@ select.in{padding:7px 10px;width:auto}select option{background:#121915}
 .bd.plain{padding-right:10px}
 .bd i{font-style:normal}
 .bd button{border:0;background:none;color:var(--mute);cursor:pointer;width:18px;height:18px;border-radius:50%;line-height:1;padding:0}.bd button:hover{background:rgba(255,107,107,.25);color:#fff}
+.bd img{width:18px;height:18px;object-fit:contain;border-radius:4px;image-rendering:auto}
+.ban{color:var(--bad);font-weight:600}.u.isban .unick{color:var(--bad)}
+.bimg{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}.bimg label{cursor:pointer}
 .grant{display:inline-flex;gap:6px;align-items:center}
 .empty{padding:26px 4px;text-align:center;color:var(--mute)}
 .more{margin:14px auto 0;display:block}
@@ -103,8 +106,13 @@ dialog .in{margin-top:12px;font:600 18px ui-monospace,Consolas,monospace;letter-
         <input type="color" id="bcolor" value="#3dffa0">
         <button class="btn" id="badd">Создать</button>
       </div>
+      <div class="bimg">
+        <label class="btn g s" for="bfile">🖼 Загрузить картинку</label><input id="bfile" type="file" accept="image/*" hidden>
+        <button class="btn d s" id="bclr" hidden>Убрать картинку</button>
+        <span class="mute" id="binfo" style="font-size:12.5px">Если выбрана картинка, она показывается вместо иконки.</span>
+      </div>
       <div class="prev" id="bprev"></div>
-      <div class="mute" style="font-size:12.5px">Иконка: эмодзи или короткий символ (до 8 знаков). Созданный значок можно выдавать на вкладке «Пользователи».</div>
+      <div class="mute" style="font-size:12.5px">Иконка: эмодзи или короткий символ (до 8 знаков). Картинка: любой формат, автоматически уменьшается до 64×64 PNG. Созданный значок можно выдавать на вкладке «Пользователи».</div>
     </div>
     <div class="card" style="margin-top:12px"><div id="blist"></div></div>
   </section>
@@ -115,8 +123,8 @@ dialog .in{margin-top:12px;font:600 18px ui-monospace,Consolas,monospace;letter-
 <dialog id="idDlg">
   <h3>Сменить ID</h3>
   <div class="mute" id="idWho"></div>
-  <input class="in" id="idNew" inputmode="numeric" maxlength="8" placeholder="8 цифр" autocomplete="off">
-  <div class="mute" style="margin-top:10px;font-size:12.5px">Пустое поле = случайный свободный ID. Лаунчер игрока подхватит новый ID при следующей синхронизации (до пары минут). Старый ID освободится.</div>
+  <input class="in" id="idNew" inputmode="numeric" maxlength="8" placeholder="от 1 до 8 цифр" autocomplete="off">
+  <div class="mute" style="margin-top:10px;font-size:12.5px">Можно любой ID от 1 до 99999999 (например, 7). Пустое поле = случайный свободный 8-значный ID. Лаунчер игрока подхватит новый ID при следующей синхронизации (до пары минут). Старый ID освободится.</div>
   <div class="err" id="idErr"></div>
   <div class="row"><button class="btn g" id="idCancel">Отмена</button><button class="btn g" id="idRand">Случайный</button><button class="btn" id="idOk">Сменить</button></div>
 </dialog>
@@ -129,8 +137,8 @@ const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAl
 const ERR = {
   bad_password: 'Неверный пароль', rate_limited: 'Слишком много попыток, подождите несколько минут', unauthorized: 'Сессия истекла, войдите заново',
   bad_title: 'Название: 1–24 символа', bad_icon: 'Иконка: 1–8 знаков', bad_color: 'Неверный цвет', too_many_badges: 'Достигнут лимит значков',
-  not_found: 'Пользователь не найден', badge_not_found: 'Значок не найден', bad_id: 'ID: ровно 8 цифр, первая не 0', same_id: 'Это уже текущий ID', id_taken: 'Этот ID уже занят', full: 'Свободных ID не осталось',
-  forbidden: 'Запрос отклонён', admin_disabled: 'Админ-панель выключена на сервере', server: 'Ошибка сервера'
+  not_found: 'Пользователь не найден', badge_not_found: 'Значок не найден', bad_id: 'ID: от 1 до 8 цифр, первая не 0', same_id: 'Это уже текущий ID', id_taken: 'Этот ID уже занят', full: 'Свободных ID не осталось',
+  bad_image: 'Картинка не подошла (нужен PNG до 32 КБ), попробуйте другую', bad_reason: 'Причина: до 200 символов', too_big: 'Файл слишком большой', forbidden: 'Запрос отклонён', admin_disabled: 'Админ-панель выключена на сервере', server: 'Ошибка сервера'
 };
 let users = [], total = 0, badges = [], q = '', loadingUsers = false, idUser = null;
 
@@ -166,7 +174,8 @@ $$('.tab').forEach(b => b.onclick = () => { $$('.tab').forEach(x => x.classList.
 // ---- значки: рисуем через textContent, чтобы данные никогда не попали в HTML ----
 function badgeChip(b, onRemove) {
   const c = el('span', 'bd' + (onRemove ? '' : ' plain')); c.style.setProperty('--c', /^#[0-9a-f]{6}$/i.test(b.color) ? b.color : '#888888');
-  c.append(el('i', '', b.icon), el('span', '', b.title));
+  if (typeof b.image === 'string' && b.image.startsWith('data:image/png;base64,')) { const im = el('img'); im.src = b.image; im.alt = ''; c.append(im, el('span', '', b.title)); }
+  else c.append(el('i', '', b.icon), el('span', '', b.title));
   if (onRemove) { const x = el('button', '', '✕'); x.title = 'Отозвать значок'; x.onclick = onRemove; c.append(x); }
   return c;
 }
@@ -179,7 +188,10 @@ function renderUsers() {
   for (const u of users) {
     const row = el('div', 'u');
     row.append(el('div', 'uid', String(u.id)));
-    const n = el('div', 'unick', u.nick || '— без ника —'); n.append(el('small', '', 'создан ' + new Date(u.createdAt).toLocaleString('ru-RU'))); row.append(n);
+    row.classList.toggle('isban', !!u.banned);
+    const n = el('div', 'unick', u.nick || '— без ника —'); n.append(el('small', '', 'создан ' + new Date(u.createdAt).toLocaleString('ru-RU')));
+    if (u.banned) n.append(el('small', 'ban', '🚫 забанен' + (u.banReason ? ': ' + u.banReason : '')));
+    row.append(n);
     const act1 = el('div', 'uact');
     const g = el('span', 'grant'), sel = el('select', 'in');
     const free = badges.filter(b => !u.badges.some(x => x.id === b.id));
@@ -189,6 +201,14 @@ function renderUsers() {
     sel.onchange = () => { if (!sel.value) return; const bid = +sel.value; act(async () => { const r = await api('grant', { userId: u.id, badgeId: bid }); u.badges = r.badges; loadBadges(); renderUsers(); toast('Значок выдан'); }); };
     g.append(sel); act1.append(g);
     const idb = el('button', 'btn g s', 'Сменить ID'); idb.onclick = () => openId(u); act1.append(idb);
+    const bb = el('button', u.banned ? 'btn g s' : 'btn d s', u.banned ? 'Разбанить' : 'Забанить');
+    bb.onclick = () => {
+      const who = u.nick || u.id;
+      if (u.banned) { if (!confirm('Разбанить ' + who + '?')) return; act(async () => { const r = await api('unban', { userId: u.id }); u.banned = r.banned; u.banReason = r.banReason; renderUsers(); toast('Разбанен'); }); return; }
+      const reason = prompt('Забанить ' + who + '.\nПричина (необязательно, до 200 символов):', ''); if (reason === null) return;
+      act(async () => { const r = await api('ban', { userId: u.id, reason }); u.banned = r.banned; u.banReason = r.banReason; renderUsers(); toast('Забанен'); });
+    };
+    act1.append(bb);
     row.append(act1);
     const bl = el('div', 'ubadges');
     for (const b of u.badges) bl.append(badgeChip(b, () => { if (!confirm('Отозвать значок «' + b.title + '» у ' + (u.nick || u.id) + '?')) return; act(async () => { const r = await api('revoke', { userId: u.id, badgeId: b.id }); u.badges = r.badges; loadBadges(); renderUsers(); toast('Значок отозван'); }); }));
@@ -216,7 +236,7 @@ $('#idNew').addEventListener('input', e => { e.target.value = e.target.value.rep
 $('#idCancel').onclick = () => $('#idDlg').close();
 async function changeId(random) {
   const v = random ? '' : $('#idNew').value; $('#idErr').textContent = '';
-  if (!random && v && !/^[1-9]\d{7}$/.test(v)) { $('#idErr').textContent = ERR.bad_id; return; }
+  if (!random && v && !/^[1-9]\d{0,7}$/.test(v)) { $('#idErr').textContent = ERR.bad_id; return; }
   const what = v ? 'на ' + v : 'на случайный';
   if (!confirm('Сменить ID пользователя ' + (idUser.nick || idUser.id) + ' ' + what + '?')) return;
   $('#idOk').disabled = $('#idRand').disabled = true;
@@ -240,11 +260,27 @@ function renderBadges() {
   }
 }
 async function loadBadges() { try { badges = (await api('badges')).badges; renderBadges(); if (users.length) renderUsers(); } catch (e) { toast(e.message, true); } }
-function preview() { const p = $('#bprev'); p.replaceChildren(badgeChip({ title: $('#btitle').value.trim() || 'Название', icon: $('#bicon').value.trim() || '★', color: $('#bcolor').value })); }
+let bimg = null; // выбранная картинка значка (PNG data-URL 64×64)
+function preview() { const p = $('#bprev'); p.replaceChildren(badgeChip({ title: $('#btitle').value.trim() || 'Название', icon: $('#bicon').value.trim() || '★', color: $('#bcolor').value, image: bimg })); }
+function setImg(v, info) { bimg = v; $('#bclr').hidden = !v; $('#binfo').textContent = info || 'Если выбрана картинка, она показывается вместо иконки.'; $('#bfile').value = ''; preview(); }
+function loadImage(file) { // любая картинка → квадрат 64×64 PNG с сохранением прозрачности
+  return new Promise((ok, no) => {
+    if (!file || !/^image\//.test(file.type)) return no(new Error('Выберите файл-картинку'));
+    if (file.size > 8e6) return no(new Error('Файл больше 8 МБ'));
+    const fr = new FileReader(); fr.onerror = () => no(new Error('Не удалось прочитать файл'));
+    fr.onload = () => { const im = new Image(); im.onerror = () => no(new Error('Не удалось открыть картинку'));
+      im.onload = () => { const S = 64, c = document.createElement('canvas'); c.width = c.height = S; const k = Math.min(S / im.width, S / im.height), w = Math.max(1, Math.round(im.width * k)), h = Math.max(1, Math.round(im.height * k));
+        c.getContext('2d').drawImage(im, (S - w) / 2, (S - h) / 2, w, h); ok(c.toDataURL('image/png')); };
+      im.src = fr.result; };
+    fr.readAsDataURL(file);
+  });
+}
+$('#bfile').onchange = e => { const f = e.target.files[0]; if (!f) return; loadImage(f).then(v => setImg(v, 'Картинка: ' + f.name)).catch(er => { toast(er.message, true); setImg(null); }); };
+$('#bclr').onclick = () => setImg(null);
 ['#btitle', '#bicon', '#bcolor'].forEach(s => $(s).addEventListener('input', preview)); preview();
 $('#badd').onclick = () => act(async () => {
-  await api('badges', { title: $('#btitle').value, icon: $('#bicon').value, color: $('#bcolor').value });
-  $('#btitle').value = ''; preview(); await loadBadges(); toast('Значок создан');
+  await api('badges', { title: $('#btitle').value, icon: $('#bicon').value, color: $('#bcolor').value, image: bimg });
+  $('#btitle').value = ''; setImg(null); await loadBadges(); toast('Значок создан');
 });
 
 // ---- старт: есть ли активная сессия ----

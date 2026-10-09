@@ -206,7 +206,7 @@ test('админка: смена ID — токен и значки переез�
   assert.equal((await e.pub('/api/login', { token: tok(), nick: 'Mover', password: 'secret123' })).j.id, 77777777); // вход по паролю тоже даёт новый ID
   const other = await e.a.signup(tok(), 'Other', 'secret123');
   assert.equal((await e.call('/admin/api/change-id', { userId: other.id, newId: 77777777 })).j.error, 'id_taken');
-  assert.equal((await e.call('/admin/api/change-id', { userId: other.id, newId: 12 })).j.error, 'bad_id');
+  for (const bad of [0, 100000000, -5, '007', 'abc']) assert.equal((await e.call('/admin/api/change-id', { userId: other.id, newId: bad })).j.error, 'bad_id');
   assert.equal((await e.call('/admin/api/change-id', { userId: other.id, newId: '01234567' })).j.error, 'bad_id');
   assert.equal((await e.call('/admin/api/change-id', { userId: other.id, newId: other.id })).j.error, 'same_id');
   assert.equal((await e.call('/admin/api/change-id', { userId: 12345678, newId: 22222222 })).status, 404);
@@ -224,4 +224,85 @@ test('админка: список и поиск пользователей', as
   assert.equal((await e.call('/admin/api/users?q=_')).j.total, 1 /* только Beta_1 содержит «_» */);
   assert.equal((await e.call('/admin/api/users?limit=2&offset=2')).j.users.length, 1);
   e.a.close();
+});
+
+// ---- короткие ID, картинки значков, баны ----
+const PNG1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+const fakePng = (w, h) => { const b = Buffer.alloc(33); b.writeUInt32BE(0x89504e47, 0); b.writeUInt32BE(0x0d0a1a0a, 4); b.writeUInt32BE(13, 8); b.write('IHDR', 12, 'latin1'); b.writeUInt32BE(w, 16); b.writeUInt32BE(h, 20); return 'data:image/png;base64,' + b.toString('base64'); };
+
+test('админка: ID из 1–8 цифр', async () => {
+  const e = await adminEnv(); await e.login();
+  const t = tok(), u = await e.a.signup(t, 'Short', 'secret123');
+  for (const id of [5, 42, 1234, 99999999]) {
+    const r = await e.call('/admin/api/change-id', { userId: u.id, newId: id }); assert.equal(r.status, 200); assert.equal(r.j.id, id);
+    assert.equal((await e.pub('/api/me', { token: t })).j.id, id);
+    assert.equal((await fetch(e.base + '/api/users/' + id)).status, 200);
+    u.id = id;
+  }
+  assert.equal((await e.call('/admin/api/change-id', { userId: u.id, newId: '7' })).j.id, 7); // строкой тоже
+  assert.equal((await e.call('/admin/api/users?q=7')).j.users.some(x => x.id === 7), true);
+  e.a.close();
+});
+test('админка: значок с картинкой (PNG) — валидация, выдача, отображение у игрока', async () => {
+  const e = await adminEnv(); await e.login();
+  const t = tok(), u = await e.a.signup(t, 'Pic', 'secret123');
+  const mk = image => e.call('/admin/api/badges', { title: 'Pic', icon: '', color: '#3dffa0', image });
+  const ok = await mk(PNG1); assert.equal(ok.status, 201); assert.equal(ok.j.image, PNG1); assert.equal(ok.j.icon, '★'); // запасной текст для старых лаунчеров
+  for (const bad of ['data:image/jpeg;base64,AAAA', 'data:image/png;base64,AAAA', 'http://x/y.png', 'data:image/png;base64,' + 'A'.repeat(49000), fakePng(300, 10), fakePng(0, 10), 5, '<svg>'])
+    assert.equal((await mk(bad)).j.error, 'bad_image', String(bad).slice(0, 30));
+  assert.equal((await mk(fakePng(256, 256))).status, 201);
+  assert.equal((await e.call('/admin/api/badges', { title: 'NoImgNoIcon', icon: '', color: '#3dffa0' })).j.error, 'bad_icon'); // без картинки иконка обязательна
+  await e.call('/admin/api/grant', { userId: u.id, badgeId: ok.j.id });
+  const me = (await e.pub('/api/me', { token: t })).j; assert.equal(me.badges[0].image, PNG1);
+  const list = (await e.call('/admin/api/badges')).j.badges; assert.equal(list.find(b => b.id === ok.j.id).image, PNG1);
+  const txt = (await e.call('/admin/api/badges', { title: 'Txt', icon: '👑', color: '#ffcc00' })).j; assert.equal(txt.image, null);
+  assert.match((await fetch(e.base + '/admin')).headers.get('content-security-policy'), /img-src data:/);
+  e.a.close();
+});
+test('админка: бан и разбан', async () => {
+  const e = await adminEnv(); await e.login();
+  const t = tok(), u = await e.a.signup(t, 'Cheater', 'secret123'), t2 = tok(); await e.pub('/api/login', { token: t2, nick: 'Cheater', password: 'secret123' });
+  assert.equal((await e.call('/admin/api/ban', { userId: u.id, reason: 'x'.repeat(201) })).j.error, 'bad_reason');
+  assert.equal((await e.call('/admin/api/ban', { userId: 11111111 })).status, 404);
+  const b = await e.call('/admin/api/ban', { userId: u.id, reason: ' читы ' }); assert.equal(b.status, 200); assert.equal(b.j.banReason, 'читы');
+  for (const tt of [t, t2]) { const me = await e.pub('/api/me', { token: tt }); assert.equal(me.status, 403); assert.equal(me.j.error, 'banned'); assert.equal(me.j.reason, 'читы'); }
+  const lg = await e.pub('/api/login', { token: tok(), nick: 'Cheater', password: 'secret123' }); assert.equal(lg.status, 403); assert.equal(lg.j.error, 'banned');
+  assert.equal((await e.pub('/api/login', { token: tok(), nick: 'Cheater', password: 'wrong-pass' })).j.error, 'bad_credentials'); // чужой не узнает о бане
+  assert.equal((await e.pub('/api/register', { token: t })).status, 403);
+  assert.equal((await e.pub('/api/signup', { token: t, nick: 'Cheater', password: 'secret123' })).status, 403);
+  assert.equal((await e.pub('/api/signup', { token: tok(), nick: 'cheater', password: 'secret123' })).j.error, 'nick_taken'); // ник остаётся занятым
+  const row = (await e.call('/admin/api/users?q=Cheater')).j.users[0]; assert.equal(row.banned, true); assert.equal(row.banReason, 'читы');
+  const ub = await e.call('/admin/api/unban', { userId: u.id }); assert.equal(ub.status, 200); assert.equal(ub.j.banned, false);
+  assert.equal((await e.pub('/api/me', { token: t })).status, 200);
+  assert.equal((await e.pub('/api/login', { token: tok(), nick: 'Cheater', password: 'secret123' })).status, 200);
+  const nr = await e.call('/admin/api/ban', { userId: u.id }); assert.equal(nr.j.banReason, null); // бан без причины
+  assert.equal((await e.pub('/api/me', { token: t })).j.reason, '');
+  e.a.close();
+});
+test('миграция: старая база (ID только из 8 цифр, сессии) → короткие ID и баны работают', async () => {
+  const os = require('os'), fs = require('fs'), p = require('path').join(os.tmpdir(), 'void-mig2-' + Date.now() + '.db'), { DatabaseSync } = require('node:sqlite');
+  const sha = x => require('crypto').createHash('sha256').update(x).digest('hex');
+  const old = new DatabaseSync(p);
+  old.exec(`CREATE TABLE users(id INTEGER PRIMARY KEY CHECK(id BETWEEN 10000000 AND 99999999), token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, nick TEXT, nick_lc TEXT, pass_salt TEXT, pass_hash TEXT) STRICT;
+    CREATE TABLE sessions(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL) STRICT;
+    CREATE UNIQUE INDEX users_nick_lc ON users(nick_lc);`);
+  const t = tok(), t2 = tok(); old.prepare('INSERT INTO users(id, token_hash, created_at, nick, nick_lc) VALUES(?,?,?,?,?)').run(12345678, sha(t), 1, 'Old', 'old');
+  old.prepare('INSERT INTO sessions VALUES(?,?,?)').run(sha(t2), 12345678, 2); old.close();
+  const a = createApp({ dbPath: p, adminPassword: ADMIN, adminDelay: 0 });
+  assert.equal(a.db.prepare('SELECT COUNT(*) n FROM users').get().n, 1); assert.equal(a.db.prepare('SELECT COUNT(*) n FROM sessions').get().n, 1);
+  assert.equal(a.db.prepare("SELECT sql FROM sqlite_master WHERE name='users'").get().sql.includes('10000000'), false);
+  assert.equal(a.db.prepare("SELECT name FROM sqlite_master WHERE name='users_nick_lc'").get().name, 'users_nick_lc'); // индекс на месте
+  assert.deepEqual(a.db.prepare('PRAGMA foreign_key_check').all(), []);
+  a.close();
+  const b = createApp({ dbPath: p, adminPassword: ADMIN, adminDelay: 0 }); // повторный запуск: миграция не повторяется и ничего не ломает
+  assert.equal(b.db.prepare('SELECT COUNT(*) n FROM users').get().n, 1);
+  await new Promise(r => b.server.listen(0, '127.0.0.1', r));
+  const base = 'http://127.0.0.1:' + b.server.address().port; let cookie = '';
+  const call = async (path, body) => { const r = await fetch(base + path, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', 'x-admin': '1', cookie } }); const sc = r.headers.get('set-cookie'); if (sc) cookie = sc.split(';')[0]; return { status: r.status, j: await r.json() }; };
+  await call('/admin/api/login', { password: ADMIN });
+  assert.equal((await call('/admin/api/change-id', { userId: 12345678, newId: 3 })).j.id, 3);
+  assert.equal((await call('/api/me', { token: t2 })).j.id, 3); // сессия переехала вместе с ID
+  assert.equal((await call('/admin/api/ban', { userId: 3, reason: 'тест' })).status, 200);
+  assert.equal((await call('/api/me', { token: t })).status, 403);
+  b.close(); for (const f of [p, p + '-wal', p + '-shm']) fs.rmSync(f, { force: true });
 });
