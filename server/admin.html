@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>VoidLauncher · Админ-панель</title>
+<style>
+:root{--bg:#0b0f0d;--panel:#121915;--line:rgba(255,255,255,.1);--text:#e6f2ec;--mute:#8fa399;--acc:#3dffa0;--acc2:#27c4ff;--bad:#ff6b6b;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:radial-gradient(900px 500px at 15% -10%,rgba(61,255,160,.13),transparent 60%),radial-gradient(800px 500px at 100% 0,rgba(39,196,255,.1),transparent 60%),var(--bg);color:var(--text);font:14.5px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+button,input,select{font:inherit;color:inherit}
+[hidden]{display:none!important}
+.wrap{max-width:1020px;margin:0 auto;padding:22px 16px 60px}
+h1{margin:0;font-size:19px;letter-spacing:.01em}
+.mute{color:var(--mute)}
+.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+.top .sp{flex:1}
+.logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:0 0 18px rgba(61,255,160,.5)}
+.btn{border:0;border-radius:10px;padding:9px 16px;font-weight:600;color:#06130c;cursor:pointer;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:transform .2s,box-shadow .2s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 0 18px rgba(61,255,160,.4)}.btn:active{transform:scale(.97)}.btn:disabled{opacity:.5;cursor:default;transform:none;box-shadow:none}
+.btn.g{background:transparent;color:var(--text);border:1px solid var(--line)}.btn.g:hover{box-shadow:none;border-color:rgba(61,255,160,.5)}
+.btn.d{background:transparent;color:var(--bad);border:1px solid rgba(255,107,107,.45)}.btn.d:hover{box-shadow:none;background:rgba(255,107,107,.1)}
+.btn.s{padding:5px 11px;font-size:12.5px;border-radius:8px}
+.in{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:rgba(255,255,255,.05);outline:0;transition:border-color .25s}
+.in:focus{border-color:rgba(61,255,160,.6)}
+select.in{padding:7px 10px;width:auto}select option{background:#121915}
+.card{border:1px solid var(--line);border-radius:16px;background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.02));padding:16px}
+.err{min-height:18px;margin-top:10px;color:var(--bad);font-size:13px}
+/* вход */
+#login{max-width:380px;margin:12vh auto 0;text-align:center}
+#login .logo{margin:0 auto 14px;width:52px;height:52px;border-radius:14px}
+#login .in{margin-top:16px;text-align:center}#login .btn{width:100%;margin-top:12px}
+/* вкладки */
+.tabs{display:flex;gap:6px;margin-bottom:14px}
+.tab{padding:8px 16px;border-radius:10px;border:1px solid var(--line);background:none;color:var(--mute);cursor:pointer}
+.tab.on{color:var(--text);border-color:rgba(61,255,160,.55);background:rgba(61,255,160,.12)}
+/* пользователи */
+.bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}.bar .in{flex:1;min-width:200px}
+.u{display:grid;grid-template-columns:130px minmax(0,1fr) auto;gap:6px 14px;align-items:center;padding:12px 4px;border-top:1px solid var(--line)}
+.u:first-child{border-top:0}
+.uid{font:600 17px ui-monospace,Consolas,monospace;letter-spacing:.1em;font-variant-numeric:tabular-nums}
+.unick{font-weight:600;word-break:break-all}.unick small{display:block;color:var(--mute);font-weight:400;font-size:12px}
+.uact{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.ubadges{grid-column:2 / -1;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.bd{display:inline-flex;align-items:center;gap:6px;padding:3px 6px 3px 10px;border-radius:999px;font-size:12.5px;font-weight:600;border:1px solid color-mix(in srgb,var(--c) 65%,transparent);background:color-mix(in srgb,var(--c) 18%,transparent)}
+.bd.plain{padding-right:10px}
+.bd i{font-style:normal}
+.bd button{border:0;background:none;color:var(--mute);cursor:pointer;width:18px;height:18px;border-radius:50%;line-height:1;padding:0}.bd button:hover{background:rgba(255,107,107,.25);color:#fff}
+.grant{display:inline-flex;gap:6px;align-items:center}
+.empty{padding:26px 4px;text-align:center;color:var(--mute)}
+.more{margin:14px auto 0;display:block}
+/* значки */
+.bform{display:grid;grid-template-columns:minmax(0,1fr) 90px 60px auto;gap:10px;align-items:center}
+.bform input[type=color]{width:60px;height:40px;padding:3px;border:1px solid var(--line);border-radius:10px;background:none;cursor:pointer}
+.prev{margin:12px 0 4px}
+.brow{display:flex;align-items:center;gap:12px;padding:11px 4px;border-top:1px solid var(--line)}.brow .sp{flex:1}
+/* окно смены ID */
+dialog{border:1px solid rgba(61,255,160,.4);border-radius:18px;background:var(--panel);color:var(--text);padding:22px;width:min(400px,92vw)}
+dialog::backdrop{background:rgba(0,0,0,.6);backdrop-filter:blur(4px)}
+dialog h3{margin:0 0 6px}dialog .row{display:flex;gap:8px;margin-top:14px;justify-content:flex-end;flex-wrap:wrap}
+dialog .in{margin-top:12px;font:600 18px ui-monospace,Consolas,monospace;letter-spacing:.12em;text-align:center}
+.toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,30px);opacity:0;padding:10px 18px;border-radius:12px;background:var(--panel);border:1px solid rgba(61,255,160,.5);pointer-events:none;transition:.4s;z-index:50;max-width:92vw}
+.toast.show{transform:translate(-50%,0);opacity:1}.toast.bad{border-color:rgba(255,107,107,.7)}
+@media(max-width:700px){.u{grid-template-columns:1fr auto}.ubadges{grid-column:1 / -1}.uact{grid-column:1 / -1;justify-content:flex-start}.bform{grid-template-columns:1fr 1fr}.bform button{grid-column:1 / -1}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div id="login" class="card" hidden>
+  <div class="logo"></div>
+  <h1>Админ-панель</h1>
+  <div class="mute" style="margin-top:4px">VoidLauncher</div>
+  <input class="in" id="lpass" type="password" placeholder="Пароль администратора" autocomplete="current-password" maxlength="256">
+  <div class="err" id="lerr"></div>
+  <button class="btn" id="lok">Войти</button>
+</div>
+
+<div id="app" hidden>
+  <div class="top">
+    <div class="logo"></div>
+    <div><h1>Админ-панель</h1><div class="mute" id="total"></div></div>
+    <div class="sp"></div>
+    <button class="btn g s" id="logout">Выйти</button>
+  </div>
+  <div class="tabs"><button class="tab on" data-t="users">Пользователи</button><button class="tab" data-t="badges">Значки</button></div>
+
+  <section id="t-users">
+    <div class="card">
+      <div class="bar"><input class="in" id="q" placeholder="Поиск по ID или нику" maxlength="32" autocomplete="off"><button class="btn g" id="reload">Обновить</button></div>
+      <div id="ulist"></div>
+      <button class="btn g more" id="more" hidden>Показать ещё</button>
+    </div>
+  </section>
+
+  <section id="t-badges" hidden>
+    <div class="card">
+      <div class="bform">
+        <input class="in" id="btitle" placeholder="Название значка (до 24 символов)" maxlength="24">
+        <input class="in" id="bicon" placeholder="Иконка" maxlength="8" value="★" style="text-align:center">
+        <input type="color" id="bcolor" value="#3dffa0">
+        <button class="btn" id="badd">Создать</button>
+      </div>
+      <div class="prev" id="bprev"></div>
+      <div class="mute" style="font-size:12.5px">Иконка: эмодзи или короткий символ (до 8 знаков). Созданный значок можно выдавать на вкладке «Пользователи».</div>
+    </div>
+    <div class="card" style="margin-top:12px"><div id="blist"></div></div>
+  </section>
+</div>
+
+</div>
+
+<dialog id="idDlg">
+  <h3>Сменить ID</h3>
+  <div class="mute" id="idWho"></div>
+  <input class="in" id="idNew" inputmode="numeric" maxlength="8" placeholder="8 цифр" autocomplete="off">
+  <div class="mute" style="margin-top:10px;font-size:12.5px">Пустое поле = случайный свободный ID. Лаунчер игрока подхватит новый ID при следующей синхронизации (до пары минут). Старый ID освободится.</div>
+  <div class="err" id="idErr"></div>
+  <div class="row"><button class="btn g" id="idCancel">Отмена</button><button class="btn g" id="idRand">Случайный</button><button class="btn" id="idOk">Сменить</button></div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const ERR = {
+  bad_password: 'Неверный пароль', rate_limited: 'Слишком много попыток, подождите несколько минут', unauthorized: 'Сессия истекла, войдите заново',
+  bad_title: 'Название: 1–24 символа', bad_icon: 'Иконка: 1–8 знаков', bad_color: 'Неверный цвет', too_many_badges: 'Достигнут лимит значков',
+  not_found: 'Пользователь не найден', badge_not_found: 'Значок не найден', bad_id: 'ID: ровно 8 цифр, первая не 0', same_id: 'Это уже текущий ID', id_taken: 'Этот ID уже занят', full: 'Свободных ID не осталось',
+  forbidden: 'Запрос отклонён', admin_disabled: 'Админ-панель выключена на сервере', server: 'Ошибка сервера'
+};
+let users = [], total = 0, badges = [], q = '', loadingUsers = false, idUser = null;
+
+function toast(m, bad) { const t = $('#toast'); t.textContent = m; t.classList.toggle('bad', !!bad); t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2800); }
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+async function api(path, body) {
+  const opt = body === undefined ? { credentials: 'same-origin' } : { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-admin': '1' }, body: JSON.stringify(body) };
+  let r; try { r = await fetch('/admin/api/' + path, opt); } catch { throw new Error('Нет связи с сервером'); }
+  let j = {}; try { j = await r.json(); } catch {}
+  if (r.status === 401 && path !== 'login') { showLogin(); throw new Error(ERR.unauthorized); }
+  if (!r.ok) throw new Error(ERR[j.error] || ('Ошибка ' + r.status));
+  return j;
+}
+const act = async f => { try { return await f(); } catch (e) { toast(e.message, true); } };
+
+// ---- вход / выход ----
+function showLogin() { $('#app').hidden = true; $('#login').hidden = false; $('#lpass').value = ''; $('#lpass').focus(); }
+function showApp() { $('#login').hidden = true; $('#app').hidden = false; loadBadges(); loadUsers(true); }
+async function tryLogin() {
+  const b = $('#lok'); b.disabled = true; $('#lerr').textContent = '';
+  try { await api('login', { password: $('#lpass').value }); showApp(); }
+  catch (e) { $('#lerr').textContent = e.message; }
+  finally { b.disabled = false; }
+}
+$('#lok').onclick = tryLogin;
+$('#lpass').addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
+$('#logout').onclick = () => act(async () => { await api('logout', {}); users = []; showLogin(); });
+
+// ---- вкладки ----
+$$('.tab').forEach(b => b.onclick = () => { $$('.tab').forEach(x => x.classList.toggle('on', x === b)); $('#t-users').hidden = b.dataset.t !== 'users'; $('#t-badges').hidden = b.dataset.t !== 'badges'; });
+
+// ---- значки: рисуем через textContent, чтобы данные никогда не попали в HTML ----
+function badgeChip(b, onRemove) {
+  const c = el('span', 'bd' + (onRemove ? '' : ' plain')); c.style.setProperty('--c', /^#[0-9a-f]{6}$/i.test(b.color) ? b.color : '#888888');
+  c.append(el('i', '', b.icon), el('span', '', b.title));
+  if (onRemove) { const x = el('button', '', '✕'); x.title = 'Отозвать значок'; x.onclick = onRemove; c.append(x); }
+  return c;
+}
+
+// ---- пользователи ----
+function renderUsers() {
+  const box = $('#ulist'); box.replaceChildren();
+  $('#total').textContent = 'Всего пользователей: ' + total;
+  if (!users.length) { box.append(el('div', 'empty', q ? 'Ничего не найдено' : 'Пока никто не зарегистрировался')); }
+  for (const u of users) {
+    const row = el('div', 'u');
+    row.append(el('div', 'uid', String(u.id)));
+    const n = el('div', 'unick', u.nick || '— без ника —'); n.append(el('small', '', 'создан ' + new Date(u.createdAt).toLocaleString('ru-RU'))); row.append(n);
+    const act1 = el('div', 'uact');
+    const g = el('span', 'grant'), sel = el('select', 'in');
+    const free = badges.filter(b => !u.badges.some(x => x.id === b.id));
+    sel.append(el('option', '', free.length ? '+ значок…' : 'нет значков')); sel.firstChild.value = '';
+    for (const b of free) { const o = el('option', '', b.icon + ' ' + b.title); o.value = b.id; sel.append(o); }
+    sel.disabled = !free.length;
+    sel.onchange = () => { if (!sel.value) return; const bid = +sel.value; act(async () => { const r = await api('grant', { userId: u.id, badgeId: bid }); u.badges = r.badges; loadBadges(); renderUsers(); toast('Значок выдан'); }); };
+    g.append(sel); act1.append(g);
+    const idb = el('button', 'btn g s', 'Сменить ID'); idb.onclick = () => openId(u); act1.append(idb);
+    row.append(act1);
+    const bl = el('div', 'ubadges');
+    for (const b of u.badges) bl.append(badgeChip(b, () => { if (!confirm('Отозвать значок «' + b.title + '» у ' + (u.nick || u.id) + '?')) return; act(async () => { const r = await api('revoke', { userId: u.id, badgeId: b.id }); u.badges = r.badges; loadBadges(); renderUsers(); toast('Значок отозван'); }); }));
+    if (!u.badges.length) bl.append(el('span', 'mute', 'нет значков'));
+    row.append(bl);
+    box.append(row);
+  }
+  $('#more').hidden = users.length >= total;
+}
+async function loadUsers(reset) {
+  if (loadingUsers) return; loadingUsers = true;
+  try {
+    const off = reset ? 0 : users.length, r = await api('users?q=' + encodeURIComponent(q) + '&limit=50&offset=' + off);
+    users = reset ? r.users : users.concat(r.users); total = r.total; renderUsers();
+  } catch (e) { toast(e.message, true); } finally { loadingUsers = false; }
+}
+let qT = 0;
+$('#q').addEventListener('input', () => { clearTimeout(qT); qT = setTimeout(() => { q = $('#q').value.trim(); loadUsers(true); }, 300); });
+$('#reload').onclick = () => { loadBadges(); loadUsers(true); };
+$('#more').onclick = () => loadUsers(false);
+
+// ---- смена ID ----
+function openId(u) { idUser = u; $('#idWho').textContent = (u.nick || 'Без ника') + ' · текущий ID ' + u.id; $('#idNew').value = ''; $('#idErr').textContent = ''; $('#idDlg').showModal(); $('#idNew').focus(); }
+$('#idNew').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 8); });
+$('#idCancel').onclick = () => $('#idDlg').close();
+async function changeId(random) {
+  const v = random ? '' : $('#idNew').value; $('#idErr').textContent = '';
+  if (!random && v && !/^[1-9]\d{7}$/.test(v)) { $('#idErr').textContent = ERR.bad_id; return; }
+  const what = v ? 'на ' + v : 'на случайный';
+  if (!confirm('Сменить ID пользователя ' + (idUser.nick || idUser.id) + ' ' + what + '?')) return;
+  $('#idOk').disabled = $('#idRand').disabled = true;
+  try { const r = await api('change-id', { userId: idUser.id, newId: v || null }); idUser.id = r.id; $('#idDlg').close(); renderUsers(); toast('Новый ID: ' + r.id); }
+  catch (e) { $('#idErr').textContent = e.message; }
+  finally { $('#idOk').disabled = $('#idRand').disabled = false; }
+}
+$('#idOk').onclick = () => changeId(false);
+$('#idRand').onclick = () => changeId(true);
+$('#idNew').addEventListener('keydown', e => { if (e.key === 'Enter') changeId(false); });
+
+// ---- значки: создание и удаление ----
+function renderBadges() {
+  const box = $('#blist'); box.replaceChildren();
+  if (!badges.length) box.append(el('div', 'empty', 'Значков пока нет, создайте первый'));
+  for (const b of badges) {
+    const r = el('div', 'brow'); r.append(badgeChip(b), el('span', 'mute', 'выдан: ' + b.users), el('span', 'sp'));
+    const d = el('button', 'btn d s', 'Удалить');
+    d.onclick = () => { if (!confirm('Удалить значок «' + b.title + '»? Он пропадёт у всех (' + b.users + ').')) return; act(async () => { await api('badges/delete', { id: b.id }); await loadBadges(); loadUsers(true); toast('Значок удалён'); }); };
+    r.append(d); box.append(r);
+  }
+}
+async function loadBadges() { try { badges = (await api('badges')).badges; renderBadges(); if (users.length) renderUsers(); } catch (e) { toast(e.message, true); } }
+function preview() { const p = $('#bprev'); p.replaceChildren(badgeChip({ title: $('#btitle').value.trim() || 'Название', icon: $('#bicon').value.trim() || '★', color: $('#bcolor').value })); }
+['#btitle', '#bicon', '#bcolor'].forEach(s => $(s).addEventListener('input', preview)); preview();
+$('#badd').onclick = () => act(async () => {
+  await api('badges', { title: $('#btitle').value, icon: $('#bicon').value, color: $('#bcolor').value });
+  $('#btitle').value = ''; preview(); await loadBadges(); toast('Значок создан');
+});
+
+// ---- старт: есть ли активная сессия ----
+fetch('/admin/api/session', { credentials: 'same-origin' }).then(r => { if (r.ok) showApp(); else if (r.status === 503) { document.body.textContent = 'Админ-панель выключена на сервере (не задан ADMIN_PASSWORD).'; } else showLogin(); }).catch(showLogin);
+</script>
+</body>
+</html>
