@@ -280,11 +280,17 @@ function createApp({ dbPath = path.join(__dirname, 'data', 'void.db'), rng = def
 module.exports = { createApp, ID_MIN, ID_MAX, TOKEN_RE, NICK_RE };
 
 if (require.main === module) {
-  const app = createApp({ dbPath: process.env.DB_PATH || undefined, trustProxy: process.env.TRUST_PROXY === '1' });
-  const port = +process.env.PORT || 3000, host = process.env.HOST || '0.0.0.0';
-  app.server.listen(port, host, () => {
-    console.log(`VoidLauncher server: http://${host}:${port}`);
-    console.log(app.adminEnabled ? `Админ-панель: http://${host}:${port}/admin` : `Админ-панель ВЫКЛЮЧЕНА: задайте ADMIN_PASSWORD (не короче ${ADMIN_PASS_MIN} символов).`);
-  });
-  for (const s of ['SIGINT', 'SIGTERM']) process.on(s, () => { app.close(); process.exit(0); });
+  (async () => {
+    const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'void.db');
+    const bk = require('./ghbackup').fromEnv(dbPath); // бэкап в GitHub включается, если заданы GH_BACKUP_TOKEN и GH_BACKUP_REPO
+    if (bk) { try { await bk.restoreIfMissing(); } catch (e) { console.error('[backup] не удалось восстановить базу:', e.message); } }
+    const app = createApp({ dbPath, trustProxy: process.env.TRUST_PROXY === '1' });
+    const port = +process.env.PORT || 3000, host = process.env.HOST || '0.0.0.0';
+    app.server.listen(port, host, () => {
+      console.log(`VoidLauncher server: http://${host}:${port}`);
+      console.log(app.adminEnabled ? `Админ-панель: http://${host}:${port}/admin` : `Админ-панель ВЫКЛЮЧЕНА: задайте ADMIN_PASSWORD (не короче ${ADMIN_PASS_MIN} символов).`);
+      if (bk) bk.start(app.db);
+    });
+    for (const s of ['SIGINT', 'SIGTERM']) process.on(s, async () => { if (bk) await bk.stop(); app.close(); process.exit(0); });
+  })();
 }
