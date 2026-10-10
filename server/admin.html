@@ -204,9 +204,9 @@ function renderUsers() {
     const bb = el('button', u.banned ? 'btn g s' : 'btn d s', u.banned ? 'Разбанить' : 'Забанить');
     bb.onclick = () => {
       const who = u.nick || u.id;
-      if (u.banned) { if (!confirm('Разбанить ' + who + '?')) return; act(async () => { const r = await api('unban', { userId: u.id }); u.banned = r.banned; u.banReason = r.banReason; renderUsers(); toast('Разбанен'); }); return; }
-      const reason = prompt('Забанить ' + who + '.\nПричина (необязательно, до 200 символов):', ''); if (reason === null) return;
-      act(async () => { const r = await api('ban', { userId: u.id, reason }); u.banned = r.banned; u.banReason = r.banReason; renderUsers(); toast('Забанен'); });
+      if (u.banned) { if (!confirm('Разбанить ' + who + '? Его устройства тоже разблокируются.')) return; act(async () => { const r = await api('unban', { userId: u.id }); u.banned = r.banned; u.banReason = r.banReason; renderUsers(); toast('Разбанен'); }); return; }
+      const reason = prompt('Забанить ' + who + '.\nБан действует и на устройства игрока: новый профиль после переустановки тоже не пройдёт.\nПричина (необязательно, до 200 символов):', ''); if (reason === null) return;
+      act(async () => { const r = await api('ban', { userId: u.id, reason }); u.banned = r.banned; u.banReason = r.banReason; renderUsers(); toast('Забанен · устройств: ' + (r.devices || 0)); });
     };
     act1.append(bb);
     row.append(act1);

@@ -306,3 +306,62 @@ test('миграция: старая база (ID только из 8 цифр, 
   assert.equal((await call('/api/me', { token: t })).status, 403);
   b.close(); for (const f of [p, p + '-wal', p + '-shm']) fs.rmSync(f, { force: true });
 });
+
+// ---- бан по устройству и подпись ответов ----
+const HW_A = 'a'.repeat(64), HW_B = 'b'.repeat(64), HW_C = 'c'.repeat(64);
+test('бан по устройству: после переустановки (новый токен, новый ник) бан остаётся', async () => {
+  const e = await adminEnv(); await e.login();
+  const t = tok(), u = await e.a.signup(t, 'Evader', 'secret123');
+  assert.equal((await e.pub('/api/me', { token: t, hw: HW_A })).status, 200); // сервер запомнил устройство
+  assert.equal((await e.pub('/api/me', { token: t, hw: 'zz' })).status, 400); // мусорный hw
+  assert.equal((await e.call('/admin/api/ban', { userId: u.id, reason: 'читы' })).j.devices, 1);
+  const again = await e.pub('/api/signup', { token: tok(), nick: 'EvaderTwo', password: 'secret123', hw: HW_A }); // переустановка: новый токен и ник
+  assert.equal(again.status, 403); assert.equal(again.j.error, 'banned'); assert.equal(again.j.reason, 'читы');
+  assert.equal((await e.pub('/api/register', { token: tok(), hw: HW_A })).status, 403);
+  assert.equal((await e.pub('/api/signup', { token: tok(), nick: 'Clean', password: 'secret123', hw: HW_B })).status, 201); // другое устройство — можно
+  const other = await e.a.signup(tok(), 'Friend', 'secret123');
+  assert.equal((await e.pub('/api/login', { token: tok(), nick: 'Friend', password: 'secret123', hw: HW_A })).status, 403); // чистый аккаунт на забаненном устройстве
+  assert.equal((await e.pub('/api/login', { token: tok(), nick: 'Friend', password: 'wrong-pass', hw: HW_A })).j.error, 'bad_credentials');
+  assert.equal((await e.pub('/api/login', { token: tok(), nick: 'Friend', password: 'secret123', hw: HW_B })).status, 200);
+  // забаненный зашёл с нового устройства — оно тоже попадает под бан
+  assert.equal((await e.pub('/api/me', { token: t, hw: HW_C })).status, 403);
+  assert.equal((await e.pub('/api/signup', { token: tok(), nick: 'Evader3', password: 'secret123', hw: HW_C })).status, 403);
+  // без hw (старый или правленый лаунчер) бан по аккаунту работает как раньше
+  assert.equal((await e.pub('/api/me', { token: t })).status, 403);
+  // разбан снимает и аккаунт, и устройства
+  await e.call('/admin/api/unban', { userId: u.id });
+  assert.equal((await e.pub('/api/signup', { token: tok(), nick: 'Evader4', password: 'secret123', hw: HW_A })).status, 201);
+  assert.equal((await e.pub('/api/signup', { token: tok(), nick: 'Evader5', password: 'secret123', hw: HW_C })).status, 201);
+  e.a.close();
+});
+test('бан по устройству: смена ID не теряет устройства, бан забаненного без записанных устройств дописывается позже', async () => {
+  const e = await adminEnv(); await e.login();
+  const t = tok(), u = await e.a.signup(t, 'Mover2', 'secret123'); await e.pub('/api/me', { token: t, hw: HW_A });
+  await e.call('/admin/api/change-id', { userId: u.id, newId: 9 });
+  await e.call('/admin/api/ban', { userId: 9 });
+  assert.equal((await e.pub('/api/register', { token: tok(), hw: HW_A })).status, 403);
+  const t2 = tok(), v = await e.a.signup(t2, 'NoHw', 'secret123'); await e.call('/admin/api/ban', { userId: v.id }); // устройство ещё не известно
+  assert.equal((await e.pub('/api/me', { token: t2, hw: HW_B })).status, 403); // первый же запрос с устройства запоминает его
+  assert.equal((await e.pub('/api/register', { token: tok(), hw: HW_B })).status, 403);
+  e.a.close();
+});
+test('REQUIRE_HWID: без hw регистрация и вход не проходят', async () => {
+  const e = await adminEnv({ requireHw: true });
+  assert.equal((await e.pub('/api/signup', { token: tok(), nick: 'Nohw', password: 'secret123' })).j.error, 'hw_required');
+  assert.equal((await e.pub('/api/signup', { token: tok(), nick: 'Nohw', password: 'secret123', hw: HW_A })).status, 201);
+  e.a.close();
+});
+test('подпись ответов: me / login / signup подписаны, подделать или повторить нельзя', async () => {
+  const { generateKeyPairSync, verify } = require('crypto'), { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const e = await adminEnv({ signKey: privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64') });
+  const ok = (r, nonce) => verify(null, Buffer.from(`void1|${r.j.id}|${nonce}|${r.j.ts}|0`), publicKey, Buffer.from(r.j.sig, 'base64'));
+  const t = tok(), n1 = 'ab'.repeat(8), n2 = 'cd'.repeat(8);
+  const s = await e.pub('/api/signup', { token: t, nick: 'Signer', password: 'secret123', nonce: n1 }); assert.ok(ok(s, n1));
+  const m = await e.pub('/api/me', { token: t, nonce: n2 }); assert.ok(ok(m, n2)); assert.equal(ok(m, n1), false); // чужой nonce не подходит
+  const l = await e.pub('/api/login', { token: tok(), nick: 'Signer', password: 'secret123', nonce: n1 }); assert.ok(ok(l, n1));
+  assert.equal((await e.pub('/api/me', { token: t })).j.sig, undefined); // без nonce подписи нет
+  assert.equal((await e.pub('/api/me', { token: t, nonce: 'xyz' })).j.sig, undefined);
+  m.j.id = 12345678; assert.equal(ok(m, n2), false); // подмена id ломает подпись
+  assert.throws(() => createApp({ dbPath: ':memory:', signKey: 'not-a-key' }), /BAN_SIGN_KEY/);
+  e.a.close();
+});
